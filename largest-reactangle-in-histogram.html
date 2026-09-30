@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Largest Rectangle in Histogram — Monotonic Stack Visualizer</title>
+<style>
+  :root{
+    --bg:#0f172a; --panel:#1e293b; --line:#334155;
+    --bar:#38bdf8; --bar-stack:#a78bfa; --bar-cur:#fbbf24; --bar-pop:#f87171;
+    --rect:rgba(74,222,128,.30); --rect-line:#4ade80;
+    --text:#e2e8f0; --muted:#94a3b8; --accent:#38bdf8;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:24px 16px 56px;background:var(--bg);color:var(--text);
+       font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+       display:flex;flex-direction:column;align-items:center}
+  h1{font-size:1.25rem;margin:0 0 4px;text-align:center}
+  .sub{color:var(--muted);font-size:.9rem;margin:0 0 18px;text-align:center;max-width:760px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+         padding:14px 16px;width:min(980px,100%);margin-bottom:14px}
+  .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  input[type=text]{flex:1 1 240px;background:#0b1220;color:var(--text);
+    border:1px solid var(--line);border-radius:8px;padding:8px 10px;
+    font:0.95rem ui-monospace,Menlo,monospace}
+  button{background:#334155;color:var(--text);border:0;border-radius:8px;
+    padding:8px 14px;font-size:.9rem;cursor:pointer}
+  button:hover:not(:disabled){background:#475569}
+  button.primary{background:var(--accent);color:#081018;font-weight:700}
+  .speed{display:inline-flex;align-items:center;gap:8px;color:var(--muted);font-size:.85rem}
+  input[type=range]{accent-color:var(--accent)}
+  svg{width:100%;height:auto;display:block}
+  #stepLabel{color:var(--muted);font-size:.85rem}
+  #stepLabel2{color:var(--muted);font-size:.85rem;font-family:ui-monospace,Menlo,monospace}
+  #desc{font:0.95rem ui-monospace,Menlo,monospace;min-height:1.5em}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:12px;min-height:28px}
+  .chips .lbl{color:var(--muted);font-size:.8rem;margin-right:4px}
+  .chip{background:#0b1220;border:1px solid var(--bar-stack);color:var(--bar-stack);
+        border-radius:6px;padding:3px 8px;font:0.8rem ui-monospace,Menlo,monospace}
+  .chip.top{border-color:var(--bar-cur);color:var(--bar-cur)}
+  .stats{display:flex;flex-wrap:wrap;gap:22px;margin-top:12px;color:var(--muted);font-size:.85rem}
+  .stats b{color:var(--text);font-variant-numeric:tabular-nums}
+  .legend{display:flex;flex-wrap:wrap;gap:16px;color:var(--muted);font-size:.8rem;margin-top:10px}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+  .err{color:var(--bar-pop);font-size:.85rem;margin-top:8px;min-height:1.2em}
+</style>
+</head>
+<body>
+
+<h1>Largest Rectangle in a Histogram — Monotonic Stack</h1>
+<p class="sub">Bars are pushed while heights stay non-decreasing; when a shorter bar arrives,
+each taller bar is popped and its widest possible rectangle is computed. A height-0 sentinel
+at the end flushes the stack — exactly like the Python solution.</p>
+
+<div class="panel">
+  <div class="row">
+    <input id="input" type="text" value="2, 1, 5, 6, 2, 3" spellcheck="false" aria-label="heights">
+    <button id="load" class="primary">Load</button>
+    <button id="prev">◀ Step</button>
+    <button id="play">▶ Play</button>
+    <button id="next">Step ▶</button>
+    <button id="reset">⟲ Reset</button>
+    <span class="speed">speed <input id="speed" type="range" min="1" max="10" value="6"></span>
+  </div>
+  <div class="err" id="err"></div>
+</div>
+
+<div class="panel">
+  <div class="row" style="justify-content:space-between">
+    <span id="stepLabel"></span>
+    <span id="stepLabel2"></span>
+  </div>
+  <svg id="chart" viewBox="0 0 960 340" role="img" aria-label="histogram"></svg>
+  <div class="chips" id="chips"></div>
+  <div class="legend">
+    <span><span class="dot" style="background:var(--bar)"></span>unvisited</span>
+    <span><span class="dot" style="background:var(--bar-stack)"></span>on stack</span>
+    <span><span class="dot" style="background:var(--bar-cur)"></span>current index i</span>
+    <span><span class="dot" style="background:var(--bar-pop)"></span>just popped</span>
+    <span><span class="dot" style="background:var(--rect);border:1px solid var(--rect-line)"></span>rectangle for popped bar</span>
+  </div>
+</div>
+
+<div class="panel">
+  <div id="desc"></div>
+  <div class="stats">
+    <span>i = <b id="statI">–</b></span>
+    <span>current h = <b id="statH">–</b></span>
+    <span>stack size = <b id="statStack">0</b></span>
+    <span>max area = <b id="statMax">0</b></span>
+  </div>
+</div>
+
+<script>
+'use strict';
+const NS = 'http://www.w3.org/2000/svg';
+const W = 960, H = 340, PL = 16, PR = 16, PT = 28, PB = 30;
+const $ = id => document.getElementById(id);
+
+let heights = [], steps = [], idx = 0, timer = null;
+
+/* ---------- Parse input ---------- */
+function parseHeights(str) {
+  const tokens = str.trim().split(/[\s,]+/).filter(Boolean);
+  if (!tokens.length) throw new Error('Enter at least one non-negative number.');
+  const hs = tokens.map(Number);
+  if (hs.some(v => !Number.isFinite(v) || v < 0))
+    throw new Error('Only non-negative numbers, separated by commas or spaces.');
+  if (hs.length > 50) throw new Error('Keep it to 50 bars or fewer for readability.');
+  return hs;
+}
+
+/* ---------- Precompute every step of the algorithm ---------- */
+function buildSteps(hs) {
+  const out = [], stack = [];
+  let maxArea = 0;
+  const n = hs.length;
+  const snap = o => out.push({ ...o, stack: [...stack], maxArea });
+
+  for (let i = 0; i <= n; i++) {
+    const h = i < n ? hs[i] : 0;
+    const top = stack.length ? stack[stack.length - 1] : -1;
+    snap({ type: 'visit', i, h, top, compare: top >= 0 ? h < hs[top] : null });
+
+    while (stack.length && hs[stack[stack.length - 1]] > h) {
+      const popped = stack.pop();
+      const left  = stack.length ? stack[stack.length - 1] + 1 : 0;
+      const right = i - 1;
+      const width = right - left + 1;
+      const area  = hs[popped] * width;
+      const isNewMax = area > maxArea;
+      if (isNewMax) maxArea = area;
+      snap({ type: 'pop', i, h, popped, popH: hs[popped], left, right, width, area, isNewMax });
+    }
+    if (i < n) { stack.push(i); snap({ type: 'push', i, h }); }
+  }
+  snap({ type: 'done' });
+  return out;
+}
+
+/* ---------- Rendering ---------- */
+function render() {
+  const s = steps[idx], n = heights.length;
+  const chart = $('chart');
+  chart.innerHTML = '';
+
+  const maxVal  = Math.max(...heights, 1);
+  const usableW = W - PL - PR, usableH = H - PT - PB;
+  const slot = usableW / n;
+  const barW = Math.max(8, Math.min(slot * 0.68, 90));
+  const yOf = v => PT + usableH * (1 - v / maxVal);
+  const hOf = v => usableH * (v / maxVal);
+  const xc  = i2 => PL + slot * i2 + slot / 2;
+  const x0  = i2 => xc(i2) - barW / 2;
+
+  const el = (tag, attrs, text) => {
+    const e = document.createElementNS(NS, tag);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    if (text != null) e.textContent = text;
+    chart.appendChild(e);
+  };
+
+  el('line', { x1: PL, y1: H - PB, x2: W - PR, y2: H - PB, stroke: 'var(--line)', 'stroke-width': 1 });
+
+  const inStack = new Set(s.stack);
+  const mono = 'ui-monospace,Menlo,monospace';
+
+  heights.forEach((v, i2) => {
+    if (v > 0) {
+      let fill = 'var(--bar)';
+      if (inStack.has(i2)) fill = 'var(--bar-stack)';
+      if (s.type === 'pop' && s.popped === i2) fill = 'var(--bar-pop)';
+      if (s.i === i2 && (s.type === 'visit' || s.type === 'push' || s.type === 'pop')) fill = 'var(--bar-cur)';
+      el('rect', { x: x0(i2).toFixed(2), y: yOf(v).toFixed(2), width: barW.toFixed(2),
+                   height: hOf(v).toFixed(2), rx: 3, fill });
+    }
+    el('text', { x: xc(i2).toFixed(2), y: (yOf(v) - 6).toFixed(2), 'text-anchor': 'middle',
+                 'font-size': 12, fill: 'var(--muted)', 'font-family': mono }, v);
+    el('text', { x: xc(i2).toFixed(2), y: H - PB + 18, 'text-anchor': 'middle', 'font-size': 11,
+                 fill: (s.type !== 'done' && i2 === s.i) ? 'var(--bar-cur)' : 'var(--muted)',
+                 'font-family': mono }, i2);
+  });
+
+  /* The rectangle computed for the bar that was just popped */
+  if (s.type === 'pop') {
+    const rx = x0(s.left), rw = x0(s.right) + barW - rx;
+    const ry = yOf(s.popH), rh = hOf(s.popH);
+    el('rect', { x: rx.toFixed(2), y: ry.toFixed(2), width: rw.toFixed(2), height: rh.toFixed(2),
+                 fill: 'var(--rect)', stroke: 'var(--rect-line)', 'stroke-dasharray': '5 4',
+                 'stroke-width': 1.5, rx: 3 });
+    const labelY = rh >= 20 ? ry + 17 : ry - 7;
+    el('text', { x: (rx + rw / 2).toFixed(2), y: labelY.toFixed(2), 'text-anchor': 'middle',
+                 'font-size': 13, 'font-weight': 'bold', fill: 'var(--rect-line)',
+                 'font-family': mono }, `area = ${s.area}`);
+  }
+
+  /* Stack chips (bottom → top) */
+  const chips = $('chips');
+  if (!s.stack.length) chips.innerHTML = '<span class="lbl">stack: (empty)</span>';
+  else chips.innerHTML = '<span class="lbl">stack (bottom → top):</span>' +
+    s.stack.map((i2, k) => {
+      const isTop = k === s.stack.length - 1;
+      return `<span class="chip${isTop ? ' top' : ''}">[${i2}] h=${heights[i2]}${isTop ? ' ← top' : ''}</span>`;
+    }).join('');
+
+  /* Narration + stats */
+  let msg;
+  if (s.type === 'visit') {
+    if (s.i === n) msg = 'Sentinel reached (i = n, h = 0) — flush every remaining bar from the stack.';
+    else if (s.top < 0) msg = `i = ${s.i}, h = ${s.h} — stack is empty, nothing to pop.`;
+    else msg = `i = ${s.i}, h = ${s.h} vs stack top [${s.top}] h = ${heights[s.top]} → ` +
+               (s.compare ? `${s.h} < ${heights[s.top]} → pop while smaller` : `${s.h} ≥ ${heights[s.top]} → no pops`);
+  } else if (s.type === 'pop') {
+    msg = `POP [${s.popped}] h = ${s.popH}: width = ${s.width}, area = ${s.popH} × ${s.width} = ${s.area}` +
+          (s.isNewMax ? '  ★ new max!' : '');
+  } else if (s.type === 'push') {
+    msg = `PUSH i = ${s.i} (h = ${s.h}) — stack stays non-decreasing.`;
+  } else {
+    msg = `Finished — largest rectangle area = ${s.maxArea}.`;
+  }
+  $('desc').textContent = msg;
+  $('stepLabel').textContent = `step ${idx + 1} / ${steps.length}`;
+  $('stepLabel2').textContent = `heights = [${heights.join(', ')}]`;
+  $('statI').textContent     = s.type === 'done' ? '–' : s.i;
+  $('statH').textContent     = s.type === 'done' ? '–' : s.h;
+  $('statStack').textContent = s.stack.length;
+  $('statMax').textContent   = s.maxArea;
+}
+
+/* ---------- Playback controls ---------- */
+function goTo(k) { idx = Math.max(0, Math.min(steps.length - 1, k)); render(); }
+function stop()  { if (timer) { clearInterval(timer); timer = null; $('play').textContent = '▶ Play'; } }
+function play() {
+  if (timer) { stop(); return; }
+  if (idx >= steps.length - 1) idx = 0;
+  $('play').textContent = '❚❚ Pause';
+  const delay = 1080 - $('speed').value * 95;
+  timer = setInterval(() => {
+    if (idx >= steps.length - 1) stop(); else goTo(idx + 1);
+  }, delay);
+}
+function load() {
+  $('err').textContent = '';
+  try {
+    heights = parseHeights($('input').value);
+    steps = buildSteps(heights);
+    stop(); idx = 0; render();
+  } catch (e) { $('err').textContent = e.message; }
+}
+
+ $('load').onclick  = load;
+ $('input').addEventListener('keydown', e => { if (e.key === 'Enter') load(); });
+ $('prev').onclick  = () => { stop(); goTo(idx - 1); };
+ $('next').onclick  = () => { stop(); goTo(idx + 1); };
+ $('reset').onclick = () => { stop(); goTo(0); };
+ $('play').onclick  = play;
+ $('speed').oninput = () => { if (timer) { stop(); play(); } };
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON') return;
+  if (e.key === 'ArrowLeft')  { stop(); goTo(idx - 1); }
+  if (e.key === 'ArrowRight') { stop(); goTo(idx + 1); }
+  if (e.key === ' ')          { e.preventDefault(); play(); }
+});
+
+load();
+</script>
+</body>
+</html>
